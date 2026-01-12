@@ -1,41 +1,88 @@
 const AppError = require('../errors/AppError');
 
-const STATUS_VALIDOS = ['pendente', 'preparando', 'entregue', 'cancelado'];
+function erroValidacao(message, errors) {
+  return new AppError(message, 400, errors);
+}
 
-exports.validarCriacaoPedido = ({ cliente, itens, total }) => {
-  const erros = {};
+exports.validarCriacaoPedido = (dados) => {
+  const errors = {};
 
-  if (typeof cliente !== 'string' || cliente.trim() === '') {
-    erros.cliente = 'Nome do cliente é obrigatório';
+  // cliente
+  if (!dados || typeof dados !== 'object') {
+    throw erroValidacao('Body inválido', { body: 'Envie um JSON válido' });
   }
 
-  if (!Array.isArray(itens) || itens.length === 0) {
-    erros.itens = 'Pedido deve conter ao menos um item';
-  } else if (itens.some(i => typeof i !== 'string' || i.trim() === '')) {
-    erros.itens = 'Todos os itens devem ser strings não vazias';
+  if (typeof dados.cliente !== 'string' || dados.cliente.trim().length < 2) {
+    errors.cliente = 'cliente deve ser um texto com pelo menos 2 caracteres';
   }
 
-  if (typeof total !== 'number' || total <= 0) {
-    erros.total = 'Total deve ser um número maior que zero';
-  }
+  // itens
+  if (!Array.isArray(dados.itens) || dados.itens.length < 1) {
+    errors.itens = 'itens deve ser um array com pelo menos 1 item';
+  } else {
+    // valida cada item
+    dados.itens.forEach((item, index) => {
+      if (!item || typeof item !== 'object') {
+        errors[`itens[${index}]`] = 'item inválido';
+        return;
+      }
 
-  if (Object.keys(erros).length > 0) {
-    throw new AppError('Dados inválidos para criar pedido', 400, erros);
-  }
-};
+      if (typeof item.nome !== 'string' || item.nome.trim().length < 1) {
+        errors[`itens[${index}].nome`] = 'nome do item é obrigatório';
+      }
 
-exports.validarAtualizacaoStatus = (status) => {
-  if (!STATUS_VALIDOS.includes(status)) {
-    throw new AppError('Status inválido', 400, {
-      status: `Status permitido: ${STATUS_VALIDOS.join(', ')}`
+      // aceita qtd ou quantidade (pra não te travar)
+      const qtdRaw = item.qtd ?? item.quantidade;
+      const qtdNum = Number(qtdRaw);
+
+      if (Number.isNaN(qtdNum) || !Number.isInteger(qtdNum) || qtdNum <= 0) {
+        errors[`itens[${index}].qtd`] = 'qtd deve ser um inteiro positivo';
+      }
     });
   }
-};
 
+  // total
+  const totalNum = Number(dados.total);
+  if (Number.isNaN(totalNum) || totalNum <= 0) {
+    errors.total = 'total deve ser um número maior que 0';
+  }
+
+  if (Object.keys(errors).length > 0) {
+    throw erroValidacao('Dados inválidos', errors);
+  }
+
+  // ✅ opcional: já devolve o body "normalizado" em tipos corretos
+  return {
+    ...dados,
+    total: totalNum
+  };
+};
+const STATUS_VALIDOS = ['pendente', 'preparando', 'entregue', 'cancelado'];
+
+exports.validarAtualizacaoStatus = (status) => {
+  if (typeof status !== 'string') {
+    throw new AppError('Status inválido', 400, { status: 'status deve ser texto' });
+  }
+
+  const s = status.toLowerCase();
+
+  if (!STATUS_VALIDOS.includes(s)) {
+    throw new AppError('Status inválido', 400, {
+      status: `status deve ser um de: ${STATUS_VALIDOS.join(', ')}`
+    });
+  }
+
+  return s; // devolve normalizado
+};
 exports.validarId = (id) => {
-  if (!Number.isInteger(id) || id <= 0) {
+  const num = Number(id);
+
+  if (Number.isNaN(num) || !Number.isInteger(num) || num <= 0) {
     throw new AppError('ID inválido', 400, {
       id: 'ID deve ser um número inteiro positivo'
     });
   }
+
+  return num; // devolve o id já como número
 };
+

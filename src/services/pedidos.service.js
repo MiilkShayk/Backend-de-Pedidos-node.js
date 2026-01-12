@@ -3,96 +3,150 @@ const {
   validarAtualizacaoStatus,
   validarId
 } = require('../validators/pedidos.validator');
+const {
+  parsePositiveInt,
+  parseEnum,
+  parseIsoDate,
+  assertFromTo
+} = require('../utils/validation');
 
 const { normalizarNome, normalizarItem } = require('../utils/normalize');
 const pedidoRepository = require('../repositories/pedidos.repository');
 const AppError = require('../errors/AppError');
 const STATUS_VALIDOS = ['pendente', 'preparando', 'entregue', 'cancelado'];
+const ORDER_VALIDO = ['asc', 'desc'];
 
 
 
-exports.criarPedido = async (dados) => {
-  validarCriacaoPedido(dados);
+
+exports.criarPedido = async (dados, userId) => {
+  const dadosValidos = validarCriacaoPedido(dados);
 
   return pedidoRepository.criar({
-    cliente: normalizarNome(dados.cliente),
-    itens: dados.itens.map(normalizarItem),
-    total: dados.total,
-    status: 'pendente'
+    cliente: normalizarNome(dadosValidos.cliente),
+    itens: dadosValidos.itens.map(normalizarItem),
+    total: dadosValidos.total,
+    status: 'pendente',
+    user_id: userId
   });
 };
 
-exports.listarPedidos = async ({ page = 1, limit = 10, status }) => {
-  page = Number(page);
-  limit = Number(limit);
+exports.listarPedidos = async ({ page, limit, status, cliente, order, from, to, userId }) => {
+  const pageNum = parsePositiveInt(page, 'page', { defaultValue: 1 });
+  const limitNum = parsePositiveInt(limit, 'limit', { defaultValue: 10 });
 
-  if (page < 1 || limit < 1) {
-    throw new AppError('Parâmetros de paginação inválidos', 400);
+  if (limitNum > 50) {
+    throw new AppError('Limit máximo é 50', 400, { limit: 'limit máximo é 50' });
   }
 
-  if (status && !STATUS_VALIDOS.includes(status)) {
-    throw new AppError('Status inválido para filtro', 400);
-  }
+  const statusVal = parseEnum(status, 'status', STATUS_VALIDOS);
+  const orderVal = parseEnum(order, 'order', ORDER_VALIDO, { defaultValue: 'desc' });
 
-  const offset = (page - 1) * limit;
+  const fromDate = parseIsoDate(from, 'from');
+  const toDate = parseIsoDate(to, 'to');
+  assertFromTo(fromDate, toDate);
+
+  let clienteNormalizado;
+  if (cliente) clienteNormalizado = normalizarNome(cliente);
+
+  const offset = (pageNum - 1) * limitNum;
+  const orderBy = orderVal.toUpperCase(); // 'ASC'/'DESC'
 
   const [pedidos, total] = await Promise.all([
     pedidoRepository.listarPaginado({
-      limit,
+      limit: limitNum,
       offset,
-      status
+      status: statusVal,
+      cliente: clienteNormalizado,
+      orderBy,
+      from: fromDate,
+      to: toDate,
+      userId
     }),
-    pedidoRepository.contar(status)
+    pedidoRepository.contar({
+      status: statusVal,
+      cliente: clienteNormalizado,
+      from: fromDate,
+      to: toDate,
+      userId
+    })
   ]);
 
   return {
     data: pedidos,
     meta: {
       total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit)
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
     }
   };
 };
 
-exports.atualizarStatus = async (id, status) => {
-  validarId(id);
-  validarAtualizacaoStatus(status);
+exports.listarPorId = async (id, userId) => {
+  const idValido = validarId(id);
 
-  const pedido = await pedidoRepository.buscarPorId(id);
+  const pedido = await pedidoRepository.listarPorId(idValido);
 
-  if (!pedido) {
-    throw new AppError('Pedido não encontrado', 404);
+  if (!pedido) throw new AppError('Pedido não encontrado', 404);
+
+  if (pedido.user_id !== userId) {
+    throw new AppError('Acesso negado', 403);
   }
 
-  if (pedido.status === 'entregue') {
-    throw new AppError(
-      'Pedido já entregue não pode ser alterado',
-      409
-    );
-  }
-
-  await pedidoRepository.atualizarStatus(id, status);
-
-  return { id, status };
+  return pedido;
 };
 
-exports.removerPedido = async (id) => {
-  validarId(id);
+exports.atualizarStatus = async (id, status, userId) => {
+  const idValido = validarId(id);
+  const statusValido = validarAtualizacaoStatus(status);
 
-  const pedido = await pedidoRepository.buscarPorId(id);
+  const pedido = await pedidoRepository.listarPorId(idValido);
+  if (!pedido) throw new AppError('Pedido não encontrado', 404);
 
-  if (!pedido) {
-    throw new AppError('Pedido não encontrado', 404);
+  if (pedido.user_id !== userId) {
+    throw new AppError('Acesso negado', 403);
   }
 
   if (pedido.status === 'entregue') {
-    throw new AppError(
-      'Pedido entregue não pode ser removido',
-      409
-    );
+    throw new AppError('Pedido já entregue não pode ser alterado', 409);
   }
 
-  await pedidoRepository.remover(id);
+  await pedidoRepository.atualizarStatus(idValido, statusValido);
+  return { id: idValido, status: statusValido };
+};
+
+exports.removerPedido = async (id, userId) => {
+  const idValido = validarId(id);
+
+  const pedido = await pedidoRepository.listarPorId(idValido);
+  if (!pedido) throw new AppError('Pedido não encontrado', 404);
+
+  if (pedido.user_id !== userId) {
+    throw new AppError('Acesso negado', 403);
+  }
+
+  if (pedido.status === 'entregue') {
+    throw new AppError('Pedido entregue não pode ser removido', 409);
+  }
+
+  await pedidoRepository.remover(idValido);
+  return { message: 'Pedido removido com sucesso', id: idValido };
+};
+
+exports.resumoPedidos = async ({ from, to, cliente }) => {
+  const fromDate = parseIsoDate(from, 'from');
+  const toDate = parseIsoDate(to, 'to');
+  assertFromTo(fromDate, toDate);
+
+  let clienteNormalizado;
+  if (cliente) clienteNormalizado = normalizarNome(cliente);
+
+  const resumo = await pedidoRepository.resumo({
+    from: fromDate,
+    to: toDate,
+    cliente: clienteNormalizado
+  });
+
+  return { data: resumo };
 };

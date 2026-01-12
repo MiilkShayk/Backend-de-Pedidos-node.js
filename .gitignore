@@ -5,6 +5,7 @@ node_modules/
 # SQLite
 *.sqlite
 *.sqlite3
+*.db
 
 # Env
 .env
